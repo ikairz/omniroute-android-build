@@ -1,0 +1,94 @@
+name: Build OmniRoute production artifact for Termux
+
+on:
+  workflow_dispatch:
+    inputs:
+      omniroute_ref:
+        description: "OmniRoute branch/tag/commit to build"
+        required: true
+        default: "release/v3.8.49"
+      artifact_name:
+        description: "Uploaded artifact name"
+        required: true
+        default: "omniroute-next-production"
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build on GitHub ARM64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+
+    env:
+      CI: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+      OMNIROUTE_SKIP_POSTINSTALL: "1"
+      OMNIROUTE_USE_TURBOPACK: "0"
+      OMNIROUTE_DISABLE_BACKGROUND_SERVICES: "true"
+      NODE_OPTIONS: "--max-old-space-size=12288"
+
+    steps:
+      - name: Checkout build harness
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: "omniroute/package-lock.json"
+
+      - name: Checkout OmniRoute source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          REF="${{ github.event.inputs.omniroute_ref || 'release/v3.8.49' }}"
+          git clone --depth 1 --single-branch --branch "$REF" https://github.com/diegosouzapw/OmniRoute.git omniroute
+
+      - name: Install dependencies
+        working-directory: omniroute
+        shell: bash
+        run: |
+          set -euxo pipefail
+          npm install --force --ignore-scripts --no-audit --no-fund
+
+      - name: Apply Termux/Android compatibility patches
+        shell: bash
+        run: |
+          set -euxo pipefail
+          bash scripts/patch-omniroute-for-termux-build.sh omniroute
+
+      - name: Build production output
+        working-directory: omniroute
+        shell: bash
+        run: |
+          set -euxo pipefail
+          npm run build
+
+      - name: Prepare portable artifact
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p artifact/omniroute-production
+          rsync -a --delete \
+            --exclude 'cache' \
+            omniroute/.next/ artifact/omniroute-production/.next/
+          rsync -a omniroute/public/ artifact/omniroute-production/public/ || true
+          cp omniroute/package.json artifact/omniroute-production/package.json
+          cp omniroute/package-lock.json artifact/omniroute-production/package-lock.json || true
+          cp omniroute/next.config.mjs artifact/omniroute-production/next.config.mjs
+          cp omniroute/tsconfig.json artifact/omniroute-production/tsconfig.json || true
+          cp scripts/termux-production-start.sh artifact/omniroute-production/start-production.sh
+          chmod +x artifact/omniroute-production/start-production.sh
+          tar -C artifact -czf omniroute-production-termux.tar.gz omniroute-production
+          ls -lh omniroute-production-termux.tar.gz
+
+      - name: Upload production tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.artifact_name || 'omniroute-next-production' }}
+          path: omniroute-production-termux.tar.gz
+          if-no-files-found: error
+          retention-days: 7
