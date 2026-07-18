@@ -69,10 +69,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p artifact/omniroute-production
+          mkdir -p artifact/omniroute-production/.build
+          test -d omniroute/.build/next
           rsync -a --delete \
             --exclude 'cache' \
-            omniroute/.next/ artifact/omniroute-production/.next/
+            omniroute/.build/next/ artifact/omniroute-production/.build/next/
           rsync -a omniroute/public/ artifact/omniroute-production/public/ || true
           cp omniroute/package.json artifact/omniroute-production/package.json
           cp omniroute/package-lock.json artifact/omniroute-production/package-lock.json || true
@@ -80,6 +81,8 @@ jobs:
           cp omniroute/tsconfig.json artifact/omniroute-production/tsconfig.json || true
           cp scripts/termux-production-start.sh artifact/omniroute-production/start-production.sh
           chmod +x artifact/omniroute-production/start-production.sh
+          echo "Artifact layout:"
+          find artifact/omniroute-production -maxdepth 3 -type d | sort | sed 's#^#  #' | head -80
           tar -C artifact -czf omniroute-production-termux.tar.gz omniroute-production
           ls -lh omniroute-production-termux.tar.gz
 

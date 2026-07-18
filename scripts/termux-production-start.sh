@@ -9,7 +9,8 @@ cd "$APP_DIR"
 export NODE_ENV=production
 export NEXT_TELEMETRY_DISABLED=1
 export OMNIROUTE_DISABLE_BACKGROUND_SERVICES="${OMNIROUTE_DISABLE_BACKGROUND_SERVICES:-true}"
-export PORT HOST
+export NEXT_DIST_DIR="${NEXT_DIST_DIR:-.build/next}"
+export PORT HOST NEXT_DIST_DIR
 
 pkill -9 -f 'next start' 2>/dev/null || true
 pkill -9 -f 'server.js' 2>/dev/null || true
