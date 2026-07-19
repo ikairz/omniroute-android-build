@@ -90,7 +90,12 @@ jobs:
           export LINK_host="$(command -v g++)"
           export AR_host="$(command -v ar)"
           export RANLIB_host="$(command -v ranlib)"
-          make -j"$(nproc)" || make -j2
+          # Build ONLY the `node` target, not the default `all` (which also builds cctest +
+          # bundled googletest). gtest's C++20 <=> (spaceship) usage doesn't compile against
+          # NDK r25b's older libc++ ("invalid operands ... std::strong_ordering"). The node
+          # binary itself doesn't depend on gtest, so building the `node` gyp target directly
+          # skips the test tree entirely. Output lands at out/Release/node.
+          make -C out BUILDTYPE=Release -j"$(nproc)" node || make -C out BUILDTYPE=Release -j2 node
 
       - name: Verify node:sqlite built in
         working-directory: node-src
