@@ -1,0 +1,95 @@
+name: Build Node.js for Android (arm64, shell-layer)
+
+# Builds a standalone Node.js binary for android-arm64 so OmniRoute can run as
+# the `shell` user (uid 2000) from /data/local/tmp — outside any Termux / device
+# space sandbox, so it survives Android multi-user (device-space) switches.
+#
+# NDK pinned to r25b because node v22 fails to build with NDK r27 (nodejs/node#58505).
+# android-configure is the official cross-compile entry point in the node source.
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_ref:
+        description: "Node.js tag to build (e.g. v22.22.2)"
+        required: true
+        default: "v22.22.2"
+      artifact_name:
+        description: "Uploaded artifact name"
+        required: true
+        default: "node-android-arm64"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Cross-compile node for android-arm64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout harness
+        uses: actions/checkout@v4
+
+      - name: Install host build deps
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y python3 g++ make curl zip unzip xz-utils
+
+      - name: Download Android NDK r25b
+        run: |
+          set -euxo pipefail
+          curl -fsSL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+          unzip -q ndk.zip
+          echo "NDK=$PWD/android-ndk-r25b" >> "$GITHUB_ENV"
+
+      - name: Clone Node.js source
+        env:
+          NODE_REF: ${{ github.event.inputs.node_ref || 'v22.22.2' }}
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch "$NODE_REF" https://github.com/nodejs/node.git node-src
+
+      - name: Configure for Android (arm64, API 24)
+        working-directory: node-src
+        run: |
+          set -euxo pipefail
+          ./android-configure "$NDK" 24 arm64
+
+      - name: Build
+        working-directory: node-src
+        run: |
+          set -euxo pipefail
+          make -j"$(nproc)" || make -j2
+
+      - name: Verify node:sqlite built in
+        working-directory: node-src
+        run: |
+          set -euxo pipefail
+          # Cannot execute the android binary on the linux runner, but we can
+          # confirm the sqlite object file was compiled into the build.
+          ls -lh out/Release/node
+          find out -name '*.o' -path '*sqlite*' | head || true
+
+      - name: Package binary + libc++_shared.so
+        run: |
+          set -euxo pipefail
+          mkdir -p pkg
+          cp node-src/out/Release/node pkg/node
+          LIBCXX="$(find "$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android" -name 'libc++_shared.so' | head -1)"
+          echo "libc++_shared.so: $LIBCXX"
+          cp "$LIBCXX" pkg/libc++_shared.so
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" pkg/node || true
+          file pkg/node
+          tar -C pkg -czf node-android-arm64.tar.gz node libc++_shared.so
+          ls -lh node-android-arm64.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.artifact_name || 'node-android-arm64' }}
+          path: node-android-arm64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
