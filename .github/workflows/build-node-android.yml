@@ -6,6 +6,15 @@ name: Build Node.js for Android (arm64, shell-layer)
 #
 # NDK pinned to r25b because node v22 fails to build with NDK r27 (nodejs/node#58505).
 # android-configure is the official cross-compile entry point in the node source.
+#
+# IMPORTANT — two hard requirements learned the hard way (run 29707988139 failed):
+#   1. Runner MUST be x86_64 (ubuntu-24.04). The NDK toolchain path is hardcoded to
+#      linux-x86_64 in tools/android_configure.py, so its clang binaries are x86_64;
+#      on an arm64 runner they fail with "cannot execute binary file: Exec format error".
+#   2. android_configure.py sets CC/CXX (target = NDK clang) but NOT CC_host/CXX_host.
+#      GYP then falls back to $CXX (the NDK arm64 clang) for the HOST tools, producing
+#      arm64 host binaries that can't run on the x86_64 build machine. We must export
+#      CC_host/CXX_host/LINK_host/AR_host to the native gcc/g++ BEFORE ./configure runs.
 
 on:
   workflow_dispatch:
@@ -25,7 +34,7 @@ permissions:
 jobs:
   build:
     name: Cross-compile node for android-arm64
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
 
     steps:
@@ -56,12 +65,31 @@ jobs:
         working-directory: node-src
         run: |
           set -euxo pipefail
+          # Force HOST tools to build with the native x86_64 gcc/g++, otherwise GYP's
+          # GetEnvironFallback(('CXX_host','CXX'),'g++') picks $CXX = NDK arm64 clang and
+          # the host tools (icupkg, mksnapshot, torque, obj.host/*) come out as arm64 and
+          # cannot execute on the runner. Must be exported BEFORE ./configure (android-
+          # configure runs ./configure internally, inheriting this env).
+          export CC_host="$(command -v gcc)"
+          export CXX_host="$(command -v g++)"
+          export LINK_host="$(command -v g++)"
+          export AR_host="$(command -v ar)"
+          export RANLIB_host="$(command -v ranlib)"
+          echo "CC_host=$CC_host  CXX_host=$CXX_host"
+          "$CXX_host" --version | head -1
           ./android-configure "$NDK" 24 arm64
 
       - name: Build
         working-directory: node-src
         run: |
           set -euxo pipefail
+          # Re-assert native host toolchain (belt-and-suspenders; gyp usually bakes these
+          # into the .mk at configure time, but re-exporting guards against ?= overrides).
+          export CC_host="$(command -v gcc)"
+          export CXX_host="$(command -v g++)"
+          export LINK_host="$(command -v g++)"
+          export AR_host="$(command -v ar)"
+          export RANLIB_host="$(command -v ranlib)"
           make -j"$(nproc)" || make -j2
 
       - name: Verify node:sqlite built in
