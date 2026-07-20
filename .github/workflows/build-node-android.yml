@@ -4,7 +4,13 @@ name: Build Node.js for Android (arm64, shell-layer)
 # the `shell` user (uid 2000) from /data/local/tmp — outside any Termux / device
 # space sandbox, so it survives Android multi-user (device-space) switches.
 #
-# NDK pinned to r25b because node v22 fails to build with NDK r27 (nodejs/node#58505).
+# NDK r27c (clang 18): required because node v22 bundles C++20 deps (simdjson uses
+# std::ranges, bundled googletest uses the <=> spaceship operator) that DO NOT compile
+# against NDK r25b's old libc++ (clang 14): "no member named 'ranges' in namespace 'std'"
+# and "invalid operands ... std::strong_ordering". clang 18 has full C++20 <ranges>.
+# The old r25b<->r27 tradeoff (nodejs/node#58505: r27 hit stack_trace_posix.cc using
+# execinfo backtrace, absent on Android <API33) is resolved in v22.22.2, whose v8.gyp
+# routes the android target to stack_trace_android.cc (is_android block).
 # android-configure is the official cross-compile entry point in the node source.
 #
 # IMPORTANT — two hard requirements learned the hard way (run 29707988139 failed):
@@ -47,12 +53,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3 g++ make curl zip unzip xz-utils
 
-      - name: Download Android NDK r25b
+      - name: Download Android NDK r27c
         run: |
           set -euxo pipefail
-          curl -fsSL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+          curl -fsSL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
           unzip -q ndk.zip
-          echo "NDK=$PWD/android-ndk-r25b" >> "$GITHUB_ENV"
+          echo "NDK=$PWD/android-ndk-r27c" >> "$GITHUB_ENV"
 
       - name: Clone Node.js source
         env:
@@ -91,10 +97,9 @@ jobs:
           export AR_host="$(command -v ar)"
           export RANLIB_host="$(command -v ranlib)"
           # Build ONLY the `node` target, not the default `all` (which also builds cctest +
-          # bundled googletest). gtest's C++20 <=> (spaceship) usage doesn't compile against
-          # NDK r25b's older libc++ ("invalid operands ... std::strong_ordering"). The node
-          # binary itself doesn't depend on gtest, so building the `node` gyp target directly
-          # skips the test tree entirely. Output lands at out/Release/node.
+          # bundled googletest test tree). The node binary doesn't depend on gtest, so the
+          # `node` gyp target is both faster and avoids the test tree. Output: out/Release/node.
+          # (With clang 18 gtest would compile, but there's no reason to build the tests.)
           make -C out BUILDTYPE=Release -j"$(nproc)" node || make -C out BUILDTYPE=Release -j2 node
 
       - name: Verify node:sqlite built in
