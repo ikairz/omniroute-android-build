@@ -11,6 +11,15 @@ name: Build Node.js for Android (arm64, shell-layer)
 # The old r25b<->r27 tradeoff (nodejs/node#58505: r27 hit stack_trace_posix.cc using
 # execinfo backtrace, absent on Android <API33) is resolved in v22.22.2, whose v8.gyp
 # routes the android target to stack_trace_android.cc (is_android block).
+# Trap-handler catch (nodejs/node#53115): V8 hard-errors if the WASM
+# trap handler is enabled on Android (deps/v8/src/trap-handler/trap-handler.h:
+# "#error The V8 trap handler should not be enabled on Android"). The arm64
+# cross-build (x64 host simulating arm64 via V8_TRAP_HANDLER_VIA_SIMULATOR)
+# trips this at the mksnapshot.host LINK -> "undefined reference to
+# v8::internal::trap_handler::TryHandleSignal". Fix: the "Patch V8 WebAssembly
+# trap-handler OFF" step forces V8_TRAP_HANDLER_SUPPORTED false, turning
+# api.cc / simulator-arm64.cc references into no-op stubs. WASM still
+# works (only the optimized trap path is off). Hit run 29718037005.
 # android-configure is the official cross-compile entry point in the node source.
 #
 # IMPORTANT — two hard requirements learned the hard way (run 29707988139 failed):
@@ -69,6 +78,38 @@ jobs:
         run: |
           set -euxo pipefail
           git clone --depth 1 --branch "$NODE_REF" https://github.com/nodejs/node.git node-src
+
+      - name: Patch V8 WebAssembly trap-handler OFF for Android
+        working-directory: node-src
+        run: |
+          set -euxo pipefail
+          # V8 hard-errors if the WASM trap handler is enabled on Android
+          # (deps/v8/src/trap-handler/trap-handler.h: "#error The V8 trap handler
+          # should not be enabled on Android"). Our cross-build (x86_64 host
+          # simulating arm64 via V8_TRAP_HANDLER_VIA_SIMULATOR) sets
+          # V8_TRAP_HANDLER_SUPPORTED=true, so api.cc / simulator-arm64.cc
+          # *reference* the trap-handler symbols while the #error logic
+          # compiles them out -> "undefined reference to
+          # v8::internal::trap_handler::TryHandleSignal" at the mksnapshot.host
+          # link (nodejs/node#53115). Forcing the flag false turns those
+          # references into no-op stubs. WASM still works (only the optimized
+          # trap path is off). This hit run 29718037005 (Build step failed).
+          python3 - <<'PY'
+          p = "deps/v8/src/trap-handler/trap-handler.h"
+          s = open(p).read()
+          old = ("#define V8_TRAP_HANDLER_VIA_SIMULATOR\n"
+                 "#define V8_TRAP_HANDLER_SUPPORTED true\n")
+          # Patch every simulator branch (arm64 / loong64 / riscv64); leave
+          # x64-native and arm64-non-simulator branches untouched.
+          assert s.count(old) >= 1, "trap-handler.h VIA_SIMULATOR marker not found"
+          new = ("#define V8_TRAP_HANDLER_VIA_SIMULATOR\n"
+                  "// Disabled for Android cross-build (nodejs/node#53115): forces the\n"
+                  "// trap-handler references in api.cc / simulator-arm64.cc to no-op stubs.\n"
+                  "#define V8_TRAP_HANDLER_SUPPORTED false\n")
+          s = s.replace(old, new)
+          open(p, "w").write(s)
+          print("patched", p, "occurrences:", s.count(new))
+          PY
 
       - name: Configure for Android (arm64, API 24)
         working-directory: node-src
