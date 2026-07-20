@@ -41,7 +41,10 @@ jobs:
   build:
     name: Cross-compile node for android-arm64
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    # V8 full cross-compile on x86_64 runner exceeds 120 min; 360 is well under the
+    # 360-min GitHub Actions job cap. Raised after run 29708978398 was killed at exactly
+    # 120 min (timeout) while deep in V8 compilation.
+    timeout-minutes: 360
 
     steps:
       - name: Checkout harness
